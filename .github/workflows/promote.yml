@@ -26,13 +26,14 @@ jobs:
   promote:
     name: Promote ${{ inputs.version }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    # Secrets only available on main (environment deployment policy)
+    environment: release
+    permissions: {}
     steps:
       - id: app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
-          app-id: ${{ vars.BEE360_APP_RELEASE_APP_ID }}
+          client-id: ${{ vars.BEE360_APP_RELEASE_CLIENT_ID }}
           private-key: ${{ secrets.BEE360_APP_RELEASE_PRIVATE_KEY }}
           repositories: bee360-app
           permission-contents: write

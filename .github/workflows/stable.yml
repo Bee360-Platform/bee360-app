@@ -1,7 +1,13 @@
 name: Stable channel
 
 # Runs when a release is published as stable or promoted from pre-release (promote.yml or by hand).
-# Updates the stable channels: Homebrew cask bee360 and winget Bee360.Bee360.
+# Verifies the signatures of the binaries, then updates the stable channels:
+# Homebrew cask bee360 and winget Bee360.Bee360.
+#
+# Security model
+# - Secrets live only in the environment "release" (deployment policy: branch main, tags v*).
+# - Tags v* can only be created by the GitHub App and org admins (repository ruleset).
+# - Nothing is distributed unless the Windows/Apple code signature matches our identity.
 
 on:
   release:
@@ -17,6 +23,7 @@ env:
   TAP_REPO: Bee360-Platform/homebrew-tap
   CASK: bee360
   WINGET_ID: Bee360.Bee360
+  WINGET_FORK_OWNER: bee360-winget
   KOMAC_VERSION: 2.17.1
   KOMAC_SHA256: e694e79cd451afabf47bead66ed34586fef4814f7b94e4b61a098f419978d5d7
 
@@ -37,6 +44,7 @@ jobs:
         run: |
           set -euo pipefail
           current="${TAG#v}"
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Invalid tag '${TAG}' (expected vX.Y.Z)"; exit 1; }
           echo "version=${current}" >> "$GITHUB_OUTPUT"
           # Stable channel: compare against other stable releases only
           highest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --exclude-pre-releases --exclude-drafts --json tagName --jq '.[].tagName' \
@@ -48,18 +56,78 @@ jobs:
             echo "::notice::${current} is older than ${highest} (backport) – stable channel not updated"
           fi
 
-  homebrew:
-    name: Homebrew cask
+  verify-macos:
+    name: Verify macOS signature
     needs: guard
     if: needs.guard.outputs.newer == 'true'
+    runs-on: macos-latest
+    permissions: {}
+    outputs:
+      sha256: ${{ steps.verify.outputs.sha256 }}
+    steps:
+      - id: verify
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+          TAG: ${{ github.event.release.tag_name }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || { echo "::error::Repository variable APPLE_TEAM_ID missing/invalid"; exit 1; }
+          dmg="Bee360-app_${VERSION}.dmg"
+          curl -fsSL -o "$dmg" "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${dmg}"
+          sha=$(shasum -a 256 "$dmg" | cut -d' ' -f1)
+          echo "sha256=${sha}" >> "$GITHUB_OUTPUT"
+
+          mnt="$(mktemp -d)"
+          hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg" >/dev/null
+          trap 'hdiutil detach "$mnt" >/dev/null || true' EXIT
+          app="${mnt}/Bee360.app"
+          [ -d "$app" ] || { echo "::error::Bee360.app not found in ${dmg}"; exit 1; }
+
+          codesign --verify --deep --strict "$app"
+          team=$(codesign -dv --verbose=2 "$app" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+          [ "$team" = "$APPLE_TEAM_ID" ] || { echo "::error::Unexpected TeamIdentifier '${team}'"; exit 1; }
+          spctl --assess --type execute -vv "$app" 2>&1 | tee spctl.txt
+          grep -q "source=Notarized Developer ID" spctl.txt || { echo "::error::App is not notarized"; exit 1; }
+          echo "::notice::${dmg}: signed by team ${team}, notarized, sha256 ${sha}"
+
+  verify-windows:
+    name: Verify Windows signatures
+    needs: guard
+    if: needs.guard.outputs.newer == 'true' && vars.WINGET_ENABLED == 'true'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    permissions: {}
+    steps:
+      - env:
+          VERSION: ${{ needs.guard.outputs.version }}
+          TAG: ${{ github.event.release.tag_name }}
+          WINDOWS_SIGNER_CN: ${{ vars.WINDOWS_SIGNER_CN }}
+        run: |
+          set -euo pipefail
+          [ -n "$WINDOWS_SIGNER_CN" ] || { echo "::error::Repository variable WINDOWS_SIGNER_CN missing"; exit 1; }
+          sudo apt-get update -qq && sudo apt-get install -y -qq osslsigncode >/dev/null
+          for kind in oneclick deployment; do
+            msi="bee360_${kind}_installer_${VERSION}_x64.msi"
+            curl -fsSL -o "$msi" "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${msi}"
+            osslsigncode verify -in "$msi" \
+              -CAfile /etc/ssl/certs/ca-certificates.crt -TSA-CAfile /etc/ssl/certs/ca-certificates.crt | tee verify.txt
+            grep -q "Signature verification: ok" verify.txt || { echo "::error::Invalid signature on ${msi}"; exit 1; }
+            grep -qF "CN=${WINDOWS_SIGNER_CN}" verify.txt || { echo "::error::Unexpected signer on ${msi}"; exit 1; }
+            echo "::notice::${msi}: signature ok, signer CN=${WINDOWS_SIGNER_CN}"
+          done
+
+  homebrew:
+    name: Homebrew cask
+    needs: [guard, verify-macos]
+    if: needs.guard.outputs.newer == 'true'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions: {}
     steps:
       - id: app-token
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         with:
-          app-id: ${{ vars.BEE360_APP_RELEASE_APP_ID }}
+          client-id: ${{ vars.BEE360_APP_RELEASE_CLIENT_ID }}
           private-key: ${{ secrets.BEE360_APP_RELEASE_PRIVATE_KEY }}
           owner: Bee360-Platform
           repositories: homebrew-tap
@@ -68,39 +136,31 @@ jobs:
       - name: Update cask
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          RELEASE_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.guard.outputs.version }}
-          TAG: ${{ github.event.release.tag_name }}
+          SHA256: ${{ needs.verify-macos.outputs.sha256 }}
         run: |
           set -euo pipefail
-          asset="Bee360-app_${VERSION}.dmg"
-          digest=$(GH_TOKEN="$RELEASE_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
-            --jq ".assets[] | select(.name==\"${asset}\") | .digest // empty")
-          if [ -n "$digest" ]; then
-            sha="${digest#sha256:}"
-          else
-            sha=$(curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${asset}" | sha256sum | cut -d' ' -f1)
-          fi
-          [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::No valid SHA256 for ${asset}"; exit 1; }
-
+          # SHA256 of exactly the DMG that passed signature verification
+          [[ "$SHA256" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::No valid SHA256 from verification"; exit 1; }
           path="Casks/${CASK}.rb"
           meta=$(gh api "repos/${TAP_REPO}/contents/${path}")
           blob=$(jq -r .sha <<<"$meta")
           jq -r .content <<<"$meta" | base64 -d \
-            | sed -E "s/^  version \".*\"/  version \"${VERSION}\"/; s/^  sha256 \".*\"/  sha256 \"${sha}\"/" > cask.rb
-          grep -q "version \"${VERSION}\"" cask.rb && grep -q "sha256 \"${sha}\"" cask.rb \
-            || { echo "::error::Cask could not be updated"; exit 1; }
-
+            | sed -E "s/^  version \".*\"/  version \"${VERSION}\"/; s/^  sha256 \".*\"/  sha256 \"${SHA256}\"/" > cask.rb
+          if ! grep -qF "version \"${VERSION}\"" cask.rb || ! grep -qF "sha256 \"${SHA256}\"" cask.rb; then
+            echo "::error::Cask could not be updated"; exit 1
+          fi
           gh api -X PUT "repos/${TAP_REPO}/contents/${path}" \
             -f message="${CASK} ${VERSION}" -f sha="$blob" -f content="$(base64 -w0 cask.rb)" >/dev/null
           echo "::notice::${CASK} updated to ${VERSION}"
 
   winget:
     name: winget
-    needs: guard
+    needs: [guard, verify-windows]
     # Enabled once the machine account exists and the package was submitted once by hand (O5, O10)
     if: needs.guard.outputs.newer == 'true' && vars.WINGET_ENABLED == 'true'
     runs-on: ubuntu-latest
+    environment: release
     permissions: {}
     steps:
       - name: Install Komac (pinned, checksum verified)
@@ -115,7 +175,7 @@ jobs:
       - name: Submit to winget-pkgs
         env:
           GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
-          KOMAC_FORK_OWNER: bee360-winget
+          KOMAC_FORK_OWNER: ${{ env.WINGET_FORK_OWNER }}
           KOMAC_CREATED_WITH: bee360-app release workflow
           VERSION: ${{ needs.guard.outputs.version }}
           TAG: ${{ github.event.release.tag_name }}
