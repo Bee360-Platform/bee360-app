@@ -4,7 +4,8 @@ name: Workflow security checks
 # - actionlint (incl. shellcheck for run: scripts): syntax, expressions, shell issues
 # - zizmor: security linter for GitHub Actions (template injection, permissions,
 #   unpinned actions, dangerous triggers, impostor commits, known-vulnerable actions)
-# Tools are installed with fixed versions and verified checksums/hashes.
+# actionlint: fixed version + verified checksum (no official action exists).
+# zizmor: official zizmor-action pinned to a commit SHA (tool pinned by hash inside the action).
 
 on:
   pull_request:
@@ -20,8 +21,6 @@ concurrency:
 env:
   ACTIONLINT_VERSION: 1.7.12
   ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-  ZIZMOR_VERSION: 1.31.1
-  ZIZMOR_SHA256: 58e878eb2dbd2c6183c105e1ac28c14f7dd1eca44a783f1fe2a69647d012c410
 
 jobs:
   actionlint:
@@ -56,15 +55,9 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install zizmor (pinned, hash verified)
-        run: |
-          set -euo pipefail
-          python3 -m venv "${RUNNER_TEMP}/zizmor"
-          echo "zizmor==${ZIZMOR_VERSION} --hash=sha256:${ZIZMOR_SHA256}" > "${RUNNER_TEMP}/req.txt"
-          "${RUNNER_TEMP}/zizmor/bin/pip" install --quiet --no-deps --require-hashes -r "${RUNNER_TEMP}/req.txt"
-
-      - name: Run zizmor
-        env:
-          # read-only token for online audits (impostor commits, known-vulnerable actions)
-          GH_TOKEN: ${{ github.token }}
-        run: '"${RUNNER_TEMP}/zizmor/bin/zizmor" --format=github .github/workflows/'
+      # Official action; installs zizmor from a hash-pinned wheel (lockfile in the action's tree).
+      # Findings as PR annotations, no SARIF upload (no code scanning / security-events permission).
+      - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        with:
+          advanced-security: false
+          annotations: true
