@@ -1,0 +1,128 @@
+name: Preview channel
+
+# Runs when a build is published as pre-release (by the GitLab pipeline or by hand).
+# Updates the preview channels: Homebrew cask bee360@preview and winget Bee360.Bee360.Preview.
+
+on:
+  release:
+    types: [prereleased]
+
+permissions: {}
+
+concurrency:
+  group: channel-preview
+  cancel-in-progress: false
+
+env:
+  TAP_REPO: Bee360-Platform/homebrew-tap
+  CASK: bee360@preview
+  WINGET_ID: Bee360.Bee360.Preview
+  KOMAC_VERSION: 2.17.1
+  KOMAC_SHA256: e694e79cd451afabf47bead66ed34586fef4814f7b94e4b61a098f419978d5d7
+
+jobs:
+  guard:
+    name: Version guard
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      newer: ${{ steps.check.outputs.newer }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          current="${TAG#v}"
+          echo "version=${current}" >> "$GITHUB_OUTPUT"
+          # Preview channel: compare against all other releases
+          highest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1000 --json tagName --jq '.[].tagName' \
+            | sed 's/^v//' | { grep -vxF "$current" || true; } | sort -V | tail -n1)
+          if [ -z "$highest" ] || [ "$(printf '%s\n%s\n' "$highest" "$current" | sort -V | tail -n1)" = "$current" ]; then
+            echo "newer=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "newer=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::${current} is older than ${highest} (backport) – preview channel not updated"
+          fi
+
+  homebrew:
+    name: Homebrew cask
+    needs: guard
+    if: needs.guard.outputs.newer == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - id: app-token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          app-id: ${{ vars.BEE360_APP_RELEASE_APP_ID }}
+          private-key: ${{ secrets.BEE360_APP_RELEASE_PRIVATE_KEY }}
+          owner: Bee360-Platform
+          repositories: homebrew-tap
+          permission-contents: write
+
+      - name: Update cask
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          RELEASE_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.guard.outputs.version }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          asset="Bee360-app_${VERSION}.dmg"
+          digest=$(GH_TOKEN="$RELEASE_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+            --jq ".assets[] | select(.name==\"${asset}\") | .digest // empty")
+          if [ -n "$digest" ]; then
+            sha="${digest#sha256:}"
+          else
+            sha=$(curl -fsSL "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${asset}" | sha256sum | cut -d' ' -f1)
+          fi
+          [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::No valid SHA256 for ${asset}"; exit 1; }
+
+          path="Casks/${CASK}.rb"
+          meta=$(gh api "repos/${TAP_REPO}/contents/${path}")
+          blob=$(jq -r .sha <<<"$meta")
+          jq -r .content <<<"$meta" | base64 -d \
+            | sed -E "s/^  version \".*\"/  version \"${VERSION}\"/; s/^  sha256 \".*\"/  sha256 \"${sha}\"/" > cask.rb
+          grep -q "version \"${VERSION}\"" cask.rb && grep -q "sha256 \"${sha}\"" cask.rb \
+            || { echo "::error::Cask could not be updated"; exit 1; }
+
+          gh api -X PUT "repos/${TAP_REPO}/contents/${path}" \
+            -f message="${CASK} ${VERSION}" -f sha="$blob" -f content="$(base64 -w0 cask.rb)" >/dev/null
+          echo "::notice::${CASK} updated to ${VERSION}"
+
+  winget:
+    name: winget
+    needs: guard
+    # Enabled once the machine account exists and the package was submitted once by hand (O5, O10)
+    if: needs.guard.outputs.newer == 'true' && vars.WINGET_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Install Komac (pinned, checksum verified)
+        run: |
+          set -euo pipefail
+          f="komac-${KOMAC_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL -o "$f" "https://github.com/russellbanks/Komac/releases/download/v${KOMAC_VERSION}/${f}"
+          echo "${KOMAC_SHA256}  ${f}" | sha256sum -c -
+          tar xzf "$f" komac
+          sudo install -m 0755 komac /usr/local/bin/komac
+
+      - name: Submit to winget-pkgs
+        env:
+          GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          KOMAC_FORK_OWNER: bee360-winget
+          KOMAC_CREATED_WITH: bee360-app release workflow
+          VERSION: ${{ needs.guard.outputs.version }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          komac update "$WINGET_ID" --version "$VERSION" \
+            --urls "${base}/bee360_oneclick_installer_${VERSION}_x64.msi" "${base}/bee360_deployment_installer_${VERSION}_x64.msi" \
+            --release-notes-url "https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" \
+            --submit
