@@ -48,6 +48,10 @@ brew install --cask bee360-platform/tap/bee360@preview    # Preview
 | Stable  | Release (Latest) | when released |
 | Preview | Pre-release      | weekly        |
 
+## Support
+
+Issues are disabled in this repository. For questions or problems with the app or the installation, please contact Bee360 support as described in the Support Guide: https://www.bee360.com/legal-documents
+
 ## Security
 
-See [SECURITY.md](SECURITY.md).
+Please report vulnerabilities privately – see [SECURITY.md](SECURITY.md).
