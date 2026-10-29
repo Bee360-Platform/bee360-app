@@ -1,0 +1,23 @@
+name: Stable channel
+
+# Runs when a release is published as stable or promoted from pre-release (promote.yml or by hand).
+# The pipeline itself lives in channel.yml (shared by preview and stable).
+
+on:
+  release:
+    types: [released]
+
+permissions: {}
+
+concurrency:
+  group: channel-stable
+  cancel-in-progress: false
+
+jobs:
+  channel:
+    name: Stable
+    uses: $/.github/workflows/channel.yml
+    with:
+      channel: stable
+    permissions:
+      contents: read

@@ -1,0 +1,23 @@
+name: Preview channel
+
+# Runs when a build is published as pre-release (by the GitLab pipeline or by hand).
+# The pipeline itself lives in channel.yml (shared by preview and stable).
+
+on:
+  release:
+    types: [prereleased]
+
+permissions: {}
+
+concurrency:
+  group: channel-preview
+  cancel-in-progress: false
+
+jobs:
+  channel:
+    name: Preview
+    uses: $/.github/workflows/channel.yml
+    with:
+      channel: preview
+    permissions:
+      contents: read
