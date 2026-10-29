@@ -1,0 +1,65 @@
+name: Workflow security checks
+
+# Required status checks for pull requests that touch GitHub Actions workflows.
+# - actionlint (incl. shellcheck for run: scripts): syntax, expressions, shell issues
+# - zizmor: security linter for GitHub Actions (template injection, permissions,
+#   unpinned actions, dangerous triggers, impostor commits, known-vulnerable actions)
+# actionlint: fixed version + verified checksum (no official action exists).
+# zizmor: official zizmor-action pinned to a commit SHA (tool pinned by hash inside the action).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ACTIONLINT_VERSION: 1.7.12
+  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+
+jobs:
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint (pinned, checksum verified)
+        run: |
+          set -euo pipefail
+          f="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$f" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${f}"
+          echo "${ACTIONLINT_SHA256}  ${f}" | sha256sum -c -
+          tar xzf "$f" actionlint
+          command -v shellcheck >/dev/null || { echo "::error::shellcheck missing on runner"; exit 1; }
+
+      # actionlint does not know GitHub's self-repository syntax ($/, July 2026) yet;
+      # ignore only that specific message until actionlint supports it.
+      - name: Run actionlint (with shellcheck)
+        run: ./actionlint -color -ignore 'reusable workflow call "\$/'
+
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Official action; installs zizmor from a hash-pinned wheel (lockfile in the action's tree).
+      # Findings as PR annotations, no SARIF upload (no code scanning / security-events permission).
+      - uses: zizmorcore/zizmor-action@85b2b9fb8e3325e7a23d7d0a9d7ba5ae0f999e3e # v0.7.1
+        with:
+          advanced-security: false
+          annotations: true
