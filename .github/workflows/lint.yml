@@ -42,8 +42,10 @@ jobs:
           tar xzf "$f" actionlint
           command -v shellcheck >/dev/null || { echo "::error::shellcheck missing on runner"; exit 1; }
 
+      # actionlint does not know GitHub's self-repository syntax ($/, July 2026) yet;
+      # ignore only that specific message until actionlint supports it.
       - name: Run actionlint (with shellcheck)
-        run: ./actionlint -color
+        run: ./actionlint -color -ignore 'reusable workflow call "\$/'
 
   zizmor:
     name: zizmor
