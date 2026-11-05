@@ -46,6 +46,13 @@ brew install --cask bee360-platform/tap/bee360@preview    # Preview
 | `bee360_deployment_installer_<version>_x64.msi` | Windows | all users (admin / software distribution) |
 | `Bee360-app_<version>.dmg` | macOS | – |
 
+## Documentation
+
+- [User manual](docs/user-manual.pdf): download and install the app from the Bee360 web application
+- [Deployment manual](docs/deployment-manual.pdf): machine-wide installation and configuration for IT / software distribution
+
+See [docs/](docs/) for an overview.
+
 ## Channels
 
 | Channel | GitHub           | Cadence       |
