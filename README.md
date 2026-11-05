@@ -5,6 +5,11 @@ This repository contains no source code – only the releases.
 
 ## Install
 
+> [!NOTE]
+> **Installation via winget and Homebrew is planned and not fully available yet.**
+> The commands below describe the intended setup and may not work at the moment.
+> Until then, please download the installer directly from the [releases](https://github.com/Bee360-Platform/bee360-app/releases/latest) (see [Downloads](#downloads)).
+
 ### Windows (winget)
 
 ```
