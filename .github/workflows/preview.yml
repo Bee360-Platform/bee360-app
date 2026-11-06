@@ -1,11 +1,14 @@
 name: Preview channel
 
-# Runs when a build is published as pre-release (by the GitLab pipeline or by hand).
+# Runs when a release is published and it is a pre-release (GitLab pipeline or by hand).
+# Trigger is "published" + prerelease filter, not "prereleased": GitHub does not fire
+# "prereleased" for pre-releases published from a draft, which is how the GitLab
+# upload job works (draft -> upload assets -> publish).
 # The pipeline itself lives in channel.yml (shared by preview and stable).
 
 on:
   release:
-    types: [prereleased]
+    types: [published]
 
 permissions: {}
 
@@ -16,6 +19,7 @@ concurrency:
 jobs:
   channel:
     name: Preview
+    if: github.event.release.prerelease
     uses: $/.github/workflows/channel.yml
     with:
       channel: preview
