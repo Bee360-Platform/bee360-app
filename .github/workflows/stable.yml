@@ -21,3 +21,7 @@ jobs:
       channel: stable
     permissions:
       contents: read
+    # Needed so that the environment secrets of "release" resolve in the called
+    # workflow's jobs (they arrive empty otherwise, see actions/runner#4453).
+    # The repo has no repository or organization secrets; all secrets live in the environment.
+    secrets: inherit # zizmor: ignore[secrets-inherit]
