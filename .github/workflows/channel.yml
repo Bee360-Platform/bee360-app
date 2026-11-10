@@ -5,7 +5,8 @@ name: Channel update (reusable)
 #
 # Security model
 # - Secrets live only in the environment "release" (deployment policy: branch main, tags v*);
-#   jobs that need them declare the environment here, nothing is passed from the caller.
+#   jobs that need them declare the environment here. The callers pass "secrets: inherit",
+#   otherwise environment secrets arrive empty in reusable workflows (actions/runner#4453).
 # - Tags v* can only be created by the GitHub App and org admins (repository ruleset).
 # - Nothing is distributed unless the Windows/Apple code signature matches our identity.
 
